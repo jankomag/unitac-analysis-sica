@@ -8,6 +8,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import MinMaxScaler
 
+# Set the font family
+rcParams['font.family'] = 'serif'
+rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
+
+def clean_city_name(name):
+    """Clean city names by adding spaces before capital letters."""
+    return re.sub(r'(\w)([A-Z])', r'\1 \2', name)
+
 def load_city_data(metrics_dir='metrics'):
     """Load all metrics data for each city."""
     city_data = {}
@@ -30,7 +38,6 @@ def create_metric_plots(city_data, output_dir='plots'):
     os.makedirs(output_dir, exist_ok=True)
     
     # Set style
-    # plt.style.use('seaborn')
     sns.set_palette("husl")
     
     # Define metrics to plot for each type
@@ -197,7 +204,6 @@ def create_consolidated_plots(data, output_dir='plots'):
     }
     
     # Set style
-    plt.style.use('seaborn')
     plt.rcParams['font.family'] = 'serif'
     plt.rcParams['font.serif'] = ['Garamond'] + plt.rcParams['font.serif']
     plt.rcParams['axes.facecolor'] = 'white'
@@ -267,6 +273,7 @@ import re
 # Load the data
 df = pd.read_csv('data/population_analysis.csv')
 
+
 # Set the font family
 rcParams['font.family'] = 'serif'
 rcParams['font.serif'] = ['Garamond', 'Times New Roman', 'DejaVu Serif']
@@ -275,68 +282,88 @@ def clean_city_name(name):
     """Clean city names by adding spaces before capital letters."""
     return re.sub(r'(\w)([A-Z])', r'\1 \2', name)
 
-def create_population_plot(data, dataset_name):
-    """Create a population proportion plot for a specific dataset."""
-    # Filter for the specific dataset and where we have urban population data
-    df_dataset = data[
-        (data['dataset'] == dataset_name) & 
-        (data['urban_population'].notna()) & 
-        (data['slum_population'] > 0)
-    ]
+# Filter for cities with valid data in both datasets
+valid_data = df[df['urban_population'].notna() & (df['slum_population'] > 0)]
+
+# Calculate non-slum population
+valid_data['non_slum_population'] = valid_data['urban_population'] - valid_data['slum_population']
+valid_data['clean_city'] = valid_data['city'].apply(clean_city_name)
+
+# Create figure
+fig, ax = plt.subplots(figsize=(18, 10))
+
+# Set the width of each bar and positions of the bars
+width = 0.35
+cities = sorted(valid_data['city'].unique())
+x = range(len(cities))
+
+# Color schemes for each dataset
+colors = {
+    'HRSL': {'non_slum': '#1f77b4', 'slum': '#1f77b4'},
+    'GHS': {'non_slum': '#2ca02c', 'slum': '#2ca02c'}
+}
+
+# Create bars for each dataset
+for i, (dataset, color_dict) in enumerate(colors.items()):
+    dataset_data = valid_data[valid_data['dataset'] == dataset].sort_values('city')
     
-    # Sort by proportion
-    df_dataset = df_dataset.sort_values('slum_proportion', ascending=False)
+    # Create stacked bars
+    non_slum_bars = ax.bar([xi + (i * width) for xi in x],
+                          dataset_data['non_slum_population'],
+                          width,
+                          label=f'{dataset} Non-Slum',
+                          color=color_dict['non_slum'])
     
-    # Calculate the non-slum population
-    df_dataset['non_slum_population'] = df_dataset['urban_population'] - df_dataset['slum_population']
-    df_dataset['clean_city'] = df_dataset['city'].apply(clean_city_name)
+    slum_bars = ax.bar([xi + (i * width) for xi in x],
+                       dataset_data['slum_population'],
+                       width,
+                       bottom=dataset_data['non_slum_population'],
+                       label=f'{dataset} Slum',
+                       color=color_dict['slum'],
+                       alpha=0.3)
     
-    # Create the plot
-    fig, ax = plt.subplots(figsize=(18, 10))
-    
-    # Create the stacked bar chart
-    non_slum_bars = ax.bar(range(len(df_dataset)), df_dataset['non_slum_population'],
-                          color='lightblue', label='Non-Slum Population')
-    slum_bars = ax.bar(range(len(df_dataset)), df_dataset['slum_population'],
-                      bottom=df_dataset['non_slum_population'],
-                      color='darkblue', alpha=0.6, label='Slum Population')
-    
-    # Customize the plot
-    ax.set_title(f'SICA Cities by Proportion of Population in Slum Areas ({dataset_name})', 
-                fontsize=22, pad=20)
-    ax.set_xlabel('City', fontsize=17)
-    ax.set_ylabel('Urban Population', fontsize=17)
-    
-    # Set x-axis labels
-    ax.set_xticks(range(len(df_dataset)))
-    ax.set_xticklabels(df_dataset['clean_city'], rotation=45, ha='right', fontsize=14)
-    
-    # Format y-axis to millions
-    def millions_formatter(x, pos):
-        return f'{x/1e6:.1f}M'
-    ax.yaxis.set_major_formatter(ticker.FuncFormatter(millions_formatter))
-    
-    # Add percentage labels
-    for bar, row in zip(non_slum_bars, df_dataset.iterrows()):
-        total = row[1]['urban_population']
-        proportion = row[1]['slum_proportion']
-        percentage = proportion * 100
-        ax.text(bar.get_x() + bar.get_width()/2, total,
+    # Add percentage labels on top of bars
+    for idx, (non_slum_bar, row) in enumerate(zip(non_slum_bars, dataset_data.itertuples())):
+        total_height = row.urban_population
+        percentage = (row.slum_population / row.urban_population) * 100
+        ax.text(non_slum_bar.get_x() + non_slum_bar.get_width()/2,
+                total_height,
                 f'{percentage:.1f}%',
-                ha='center', va='bottom', fontweight='bold', fontsize=12)
-    
-    # Create legend
-    ax.legend(fontsize=14, title='Population Type', title_fontsize=16)
-    
-    # Adjust layout and display
-    plt.tight_layout()
-    
-    return fig
+                ha='center', va='bottom',
+                fontsize=10,
+                fontweight='bold')
 
-# Create plots for both datasets
-fig_hrsl = create_population_plot(df, 'HRSL')
-fig_ghs = create_population_plot(df, 'GHS')
+# Customize the plot
+ax.set_title('Urban Population and Proportion in Slum Areas by Dataset', 
+            fontsize=22, pad=20)
+ax.set_xlabel('City', fontsize=17)
+ax.set_ylabel('Urban Population', fontsize=17)
 
-# Save the plots
-fig_hrsl.savefig('plots/population_proportion_hrsl.png', dpi=300, bbox_inches='tight')
-fig_ghs.savefig('plots/population_proportion_ghs.png', dpi=300, bbox_inches='tight')
+# Set x-axis labels
+ax.set_xticks([xi + width/2 for xi in x])
+ax.set_xticklabels([clean_city_name(city) for city in cities], 
+                   rotation=45, ha='right', fontsize=14)
+
+# Format y-axis to millions
+def millions_formatter(x, pos):
+    return f'{x/1e6:.1f}M'
+ax.yaxis.set_major_formatter(ticker.FuncFormatter(millions_formatter))
+
+# Create custom legend
+legend_elements = [
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['non_slum'], label='HRSL Total Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['slum'], alpha=0.3, label='HRSL Slum Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['non_slum'], label='GHS Total Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['slum'], alpha=0.3, label='GHS Slum Population'),
+]
+ax.legend(handles=legend_elements, fontsize=12, title='Population Type', 
+         title_fontsize=14, loc='upper right')
+
+# Add grid for easier comparison
+ax.grid(axis='y', linestyle='--', alpha=0.3)
+
+# Adjust layout and display
+plt.tight_layout()
+
+# Save the plot
+plt.savefig('plots/population_proportion_comparison_stacked.png', dpi=300, bbox_inches='tight')
