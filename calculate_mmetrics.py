@@ -34,7 +34,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
 
-os.makedirs('diagnostics', exist_ok=True)
 os.makedirs('metrics', exist_ok=True)
 
 def get_utm_crs(lat, lon):
@@ -98,19 +97,19 @@ cities = {
     #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Tegucigalpa_PS.shp'),
     #     'use_augmentation': False
     # },
-    'SantoDomingo': {
-        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
-        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/SantoDomingo3857_buffered.geojson'),
-    },
-    'GuatemalaCity': {
-        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
-        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Guatemala_PS.shp'),
-    },
-    'Managua': {
-        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
-        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Managua_PS.shp'),
-        'use_augmentation': False
-    },
+    # 'SantoDomingo': {
+    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/DOM_Los_Minas_2024.tif'),
+    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/SantoDomingo3857_buffered.geojson'),
+    # },
+    # 'GuatemalaCity': {
+    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/GTM_Guatemala_2024.tif'),
+    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Guatemala_PS.shp'),
+    # },
+    # 'Managua': {
+    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/NIC_Tipitapa_2023.tif'),
+    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Managua_PS.shp'),
+    #     'use_augmentation': False
+    # },
     'Panama': {
         'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/PAN_Panama_2024.tif'),
         'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Panama_PS.shp'),
@@ -347,6 +346,7 @@ city_name_map = {
     'Managua': 'Managua, Nicaragua',
     'Belmopan_': 'Belmopan, Belize'
 }
+
 all_cities_df = all_cities_df[all_cities_df['city'].isin(['SantoDomingoDOM', 'GuatemalaCity', 'TegucigalpaHND','Panama', 'SanJoseCRI','Managua'])]
 all_cities_df['city'] = all_cities_df['city'].map(city_name_map)
 
@@ -408,8 +408,6 @@ plt.yticks(fontsize=14)
 plt.legend(title='City', title_fontsize='24', fontsize='17', bbox_to_anchor=(1, 1), loc='upper left')
 plt.tight_layout()
 plt.show()
-
-
 
 
 
