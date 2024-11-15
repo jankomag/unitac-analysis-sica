@@ -1,6 +1,7 @@
 data/
 metrics/
 plots/
+cache/
 test_analysis.py
 building_source.py
 .DS_Store

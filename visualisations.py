@@ -4,16 +4,11 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 grandparent_dir = os.path.dirname(parent_dir)
-
-
-def clean_city_name(name):
-    """Clean city names by adding spaces before capital letters."""
-    return re.sub(r'(\w)([A-Z])', r'\1 \2', name)
 
 cities = {
     'BelizeCity': {'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
@@ -54,365 +49,374 @@ cities = {
     # }
 }
 
-def create_comparative_boxplots(cities_input=None):
+import os
+import pandas as pd
+import glob
+
+def load_combined_metrics(metrics_dir='metrics'):
     """
-    Create boxplots comparing metrics between slum and non-slum areas across all cities.
-    Merges building and tessellation metrics based on uID.
-    """
-    # Metrics to visualize (we'll update this list after merging)
-    building_metrics = [
-        'building_area', 'perimeter', 'longest_axis', 'elongation', 'orientation',
-        'corners', 'fractal_dimension', 'squareness', 'circular_compactness',
-        'convexity', 'rectangularity', 'building_adjacency', 'neighbor_distance'
-    ]
+    Load metrics from all cities into a single DataFrame.
     
-    # Create plots directory if it doesn't exist
-    os.makedirs('plots', exist_ok=True)
-    
-    # Initialize lists to store data
-    all_data = []
-    
-    # Determine which cities to process
-    if cities_input is None:
-        cities = [d for d in os.listdir('metrics') if os.path.isdir(os.path.join('metrics', d))]
-    elif isinstance(cities_input, dict):
-        cities = list(cities_input.keys())
-    elif isinstance(cities_input, list):
-        cities = cities_input
-    else:
-        raise ValueError("cities_input must be None, a dictionary, or a list")
-    
-    # Load and merge data for each city
-    for city in cities:
-        try:
-            # Load both datasets
-            buildings_df = pd.read_csv(f'metrics/{city}/building_metrics.csv')
-            tessellation_df = pd.read_csv(f'metrics/{city}/tessellation_metrics.csv')
-            
-            # Add prefix to tessellation columns (except uID and is_slum)
-            tessellation_cols = tessellation_df.columns.difference(['uID', 'is_slum'])
-            tessellation_df = tessellation_df.rename(
-                columns={col: f'cell_{col}' for col in tessellation_cols}
-            )
-            
-            # Merge datasets on uID
-            merged_df = pd.merge(buildings_df, tessellation_df, on='uID', 
-                               suffixes=('', '_y'))
-            
-            # If is_slum appears in both, keep one version
-            if 'is_slum_y' in merged_df.columns:
-                merged_df = merged_df.drop(columns='is_slum_y')
-            
-            merged_df['city'] = city
-            all_data.append(merged_df)
-            print(f"Loaded and merged data for {city}")
-            
-            # Update metrics list for the first city to include new cell_ metrics
-            if len(all_data) == 1:
-                # Add cell metrics to visualization
-                cell_metrics = [col for col in merged_df.columns if col.startswith('cell_')]
-                building_metrics.extend(cell_metrics)
-                
-        except Exception as e:
-            print(f"Could not load data for {city}: {str(e)}")
-            continue
-    
-    if not all_data:
-        raise ValueError("No data was loaded for any city")
+    Parameters:
+    -----------
+    metrics_dir : str
+        Base directory containing city metric subdirectories
         
-    # Combine all data
-    combined_df = pd.concat(all_data, ignore_index=True)
+    Returns:
+    --------
+    pandas.DataFrame
+        Combined DataFrame with metrics from all cities
+    """
+    # List all city directories
+    city_dirs = glob.glob(os.path.join(metrics_dir, '*'))
     
-    # Create figure with subplots
-    n_metrics = len(building_metrics)
-    n_cols = 3
-    n_rows = (n_metrics + n_cols - 1) // n_cols
+    # Initialize empty list to store DataFrames
+    dfs = []
     
-    fig = plt.figure(figsize=(20, 5*n_rows))
-    plt.subplots_adjust(hspace=0.4, wspace=0.3)
+    # Process each city directory
+    for city_dir in city_dirs:
+        city_name = os.path.basename(city_dir)
+        metrics_file = os.path.join(city_dir, 'combined_metrics.csv')
+        
+        if os.path.exists(metrics_file):
+            # Read the CSV file
+            try:
+                df = pd.read_csv(metrics_file)
+                # Add city name as a column
+                df['city'] = city_name
+                dfs.append(df)
+                print(f"Successfully loaded metrics for {city_name}")
+            except Exception as e:
+                print(f"Error loading metrics for {city_name}: {str(e)}")
+        else:
+            print(f"No metrics file found for {city_name}")
     
-    # Create boxplots for each metric
-    for idx, metric in enumerate(building_metrics, 1):
+    if not dfs:
+        raise ValueError("No metric files were successfully loaded")
+    
+    # Combine all DataFrames
+    combined_df = pd.concat(dfs, ignore_index=True)
+    
+    print(f"\nCombined dataset summary:")
+    print(f"Total number of buildings: {len(combined_df)}")
+    print(f"Number of cities: {combined_df['city'].nunique()}")
+    print(f"Cities included: {', '.join(combined_df['city'].unique())}")
+    
+    return combined_df
+
+# Load the combined metrics
+pd.set_option('display.max_columns', None)
+combined_metrics = load_combined_metrics()
+
+def create_standardized_boxplots(combined_metrics, columns_to_visualize):
+    """
+    Create standardized boxplots for all metrics comparing slum vs non-slum areas.
+    """
+    # Filter columns
+    df = combined_metrics[columns_to_visualize + ['is_slum', 'city']].copy()
+    
+    # Remove outliers (values beyond 3 standard deviations)
+    for col in columns_to_visualize:
+        mean = df[col].mean()
+        std = df[col].std()
+        df = df[np.abs(df[col] - mean) <= (3 * std)]
+    
+    # Standardize the metrics
+    scaler = RobustScaler()
+    df_scaled = df.copy()
+    df_scaled[columns_to_visualize] = scaler.fit_transform(df[columns_to_visualize])
+    
+    # Melt the dataframe for plotting
+    df_melted = df_scaled.melt(
+        id_vars=['is_slum', 'city'],
+        value_vars=columns_to_visualize,
+        var_name='Metric',
+        value_name='Standardized Value'
+    )
+    
+    # Convert boolean to string for better visualization
+    df_melted['Area Type'] = df_melted['is_slum'].map({True: 'Slum', False: 'Non-Slum'})
+    
+    # Create figure
+    plt.figure(figsize=(15, 8))
+    
+    # Create boxplot
+    sns.boxplot(
+        data=df_melted,
+        x='Metric',
+        y='Standardized Value',
+        hue='Area Type',
+        showfliers=False  # Hide outliers for cleaner visualization
+    )
+    
+    # Customize plot
+    plt.xticks(rotation=45, ha='right')
+    plt.title('Standardized Distribution of Morphometric Metrics: Slum vs Non-Slum Areas', pad=20)
+    plt.xlabel('')
+    plt.ylabel('Standardized Value')
+    
+    # Add grid
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Calculate and print effect sizes
+    print("\nEffect Sizes (Cohen's d) between Slum and Non-Slum areas:")
+    for metric in columns_to_visualize:
+        slum_values = df[df['is_slum']][metric]
+        non_slum_values = df[~df['is_slum']][metric]
+        
+        # Calculate Cohen's d
+        d = (slum_values.mean() - non_slum_values.mean()) / np.sqrt(
+            ((len(slum_values) - 1) * slum_values.std()**2 + 
+             (len(non_slum_values) - 1) * non_slum_values.std()**2) / 
+            (len(slum_values) + len(non_slum_values) - 2)
+        )
+        
+        print(f"{metric}: {d:.3f}")
+    
+    return plt.gcf()
+
+# Define columns to visualize
+columns_to_visualize = [
+    'building_area',
+    'perimeter',
+    'elongation',
+    'fractal_dimension',
+    'circular_compactness',
+    'rectangularity',
+    'neighbor_distance',
+    'coverage_ratio'
+]
+
+# Create and save the plot
+fig = create_standardized_boxplots(combined_metrics, columns_to_visualize)
+plt.savefig('metrics/standardized_boxplots.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+def create_city_wise_boxplots(combined_metrics, columns_to_visualize):
+    """
+    Create standardized boxplots for each city comparing slum vs non-slum areas.
+    """
+    # Filter columns and standardize metrics
+    df = combined_metrics[columns_to_visualize + ['is_slum', 'city']].copy()
+    
+    # Remove outliers (values beyond 3 standard deviations)
+    for col in columns_to_visualize:
+        mean = df[col].mean()
+        std = df[col].std()
+        df = df[np.abs(df[col] - mean) <= (3 * std)]
+    
+    # Standardize the metrics
+    scaler = RobustScaler()
+    df[columns_to_visualize] = scaler.fit_transform(df[columns_to_visualize])
+    
+    # Melt the dataframe for plotting
+    df_melted = df.melt(
+        id_vars=['is_slum', 'city'],
+        value_vars=columns_to_visualize,
+        var_name='Metric',
+        value_name='Standardized Value'
+    )
+    
+    # Convert boolean to string for better visualization
+    df_melted['Area Type'] = df_melted['is_slum'].map({True: 'Slum', False: 'Non-Slum'})
+    
+    # Get number of cities for subplot layout
+    cities = df['city'].unique()
+    n_cities = len(cities)
+    
+    # Calculate subplot layout
+    n_cols = 2  # You can adjust this
+    n_rows = int(np.ceil(n_cities / n_cols))
+    
+    # Create figure
+    fig = plt.figure(figsize=(15 * n_cols, 8 * n_rows))
+    
+    # Create a plot for each city
+    for idx, city in enumerate(cities, 1):
         plt.subplot(n_rows, n_cols, idx)
         
-        # Handle potential outliers by limiting to 95th percentile
-        upper_limit = combined_df[metric].quantile(0.95)
-        plot_data = combined_df[combined_df[metric] <= upper_limit].copy()
+        # Filter data for current city
+        city_data = df_melted[df_melted['city'] == city]
         
         # Create boxplot
-        sns.boxplot(data=plot_data, x='city', y=metric, hue='is_slum', 
-                   showfliers=False)
+        sns.boxplot(
+            data=city_data,
+            x='Metric',
+            y='Standardized Value',
+            hue='Area Type',
+            showfliers=False  # Hide outliers for cleaner visualization
+        )
         
         # Customize plot
         plt.xticks(rotation=45, ha='right')
-        plt.title(f'{metric.replace("_", " ").title()}')
+        plt.title(f'{city}', pad=20)
         plt.xlabel('')
-        plt.ylabel(metric)
+        plt.ylabel('Standardized Value')
         
-        # Update legend
-        if idx == 1:
-            plt.legend(title='Slum Area', labels=['Non-Slum', 'Slum'])
-        else:
-            plt.legend([],[], frameon=False)
+        # Add grid
+        plt.grid(True, alpha=0.3, axis='y')
+        
+        # Calculate effect sizes for this city
+        print(f"\nEffect Sizes (Cohen's d) for {city}:")
+        city_df = df[df['city'] == city]
+        for metric in columns_to_visualize:
+            slum_values = city_df[city_df['is_slum']][metric]
+            non_slum_values = city_df[~city_df['is_slum']][metric]
+            
+            if len(slum_values) > 0 and len(non_slum_values) > 0:
+                # Calculate Cohen's d
+                d = (slum_values.mean() - non_slum_values.mean()) / np.sqrt(
+                    ((len(slum_values) - 1) * slum_values.std()**2 + 
+                     (len(non_slum_values) - 1) * non_slum_values.std()**2) / 
+                    (len(slum_values) + len(non_slum_values) - 2)
+                )
+                print(f"{metric}: {d:.3f}")
     
-    plt.suptitle('Comparison of Urban Morphology Metrics in Slum vs Non-Slum Areas', 
+    # Add overall title
+    plt.suptitle('Standardized Distribution of Morphometric Metrics by City: Slum vs Non-Slum Areas', 
                  fontsize=16, y=1.02)
     
+    # Adjust layout
     plt.tight_layout()
-    plt.savefig('plots/all_cities_comparison.png', dpi=300, bbox_inches='tight')
-    plt.close()
     
-    print("All cities comparison saved as 'plots/all_cities_comparison.png'")
+    return fig
 
-def create_individual_city_plots(cities_input=None):
-    """
-    Create separate plots for each city comparing all metrics between slum and non-slum areas.
-    """
-    building_metrics = [
-        'building_area', 'perimeter', 'longest_axis', 'elongation', 'orientation',
-        'corners', 'fractal_dimension', 'squareness', 'circular_compactness',
-        'convexity', 'rectangularity', 'building_adjacency', 'neighbor_distance'
-    ]
-    
-    # Create plots directory if it doesn't exist
-    os.makedirs('plots', exist_ok=True)
-    
-    # Determine which cities to process
-    if cities_input is None:
-        cities = [d for d in os.listdir('metrics') if os.path.isdir(os.path.join('metrics', d))]
-    elif isinstance(cities_input, dict):
-        cities = list(cities_input.keys())
-    elif isinstance(cities_input, list):
-        cities = cities_input
-    else:
-        raise ValueError("cities_input must be None, a dictionary, or a list")
-    
-    # Process each city
-    for city in cities:
-        try:
-            # Load city data
-            df = pd.read_csv(f'metrics/{city}/building_metrics.csv')
-            print(f"Processing {city}")
-            
-            # Create figure
-            fig, axes = plt.subplots(nrows=5, ncols=3, figsize=(15, 25))
-            plt.subplots_adjust(hspace=0.4)
-            
-            # Flatten axes for easier iteration
-            axes_flat = axes.flatten()
-            
-            # Create violin plots for each metric
-            for idx, metric in enumerate(building_metrics):
-                if idx >= len(axes_flat):
-                    break
-                    
-                ax = axes_flat[idx]
-                
-                # Handle potential outliers
-                upper_limit = df[metric].quantile(0.95)
-                plot_data = df[df[metric] <= upper_limit].copy()
-                
-                # Create violin plot with overlaid boxplot
-                sns.violinplot(data=plot_data, x='is_slum', y=metric, ax=ax,
-                             inner='box', cut=0)
-                
-                # Customize plot
-                ax.set_title(metric.replace('_', ' ').title())
-                ax.set_xlabel('')
-                ax.set_xticklabels(['Non-Slum', 'Slum'])
-                
-                # Add median values as text
-                medians = plot_data.groupby('is_slum')[metric].median()
-                for i, median in enumerate(medians):
-                    ax.text(i, ax.get_ylim()[0], f'Med: {median:.2f}', 
-                           horizontalalignment='center', verticalalignment='top')
-            
-            # Remove empty subplots if any
-            for idx in range(len(building_metrics), len(axes_flat)):
-                fig.delaxes(axes_flat[idx])
-            
-            plt.suptitle(f'Morphological Metrics Comparison for {city}', 
-                        fontsize=16, y=1.02)
-            
-            plt.tight_layout()
-            plt.savefig(f'plots/{city}_metrics.png', dpi=300, bbox_inches='tight')
-            plt.close()
-            
-            print(f"Saved plot for {city}")
-            
-        except Exception as e:
-            print(f"Error processing {city}: {str(e)}")
-            continue
+# Create and save the plot
+fig = create_city_wise_boxplots(combined_metrics, columns_to_visualize)
+plt.savefig('metrics/city_wise_standardized_boxplots.png', dpi=300, bbox_inches='tight')
+plt.close()
 
-# Run both visualizations
-create_comparative_boxplots(list(cities.keys()))
-create_individual_city_plots(list(cities.keys()))
+# # #### MAPPING ####
+# # import geopandas as gpd
+# # import matplotlib.pyplot as plt
+# # import numpy as np
+# # from shapely.geometry import box, Point
+# # import os
+# # import duckdb
+# # from pyproj import Transformer
 
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import StandardScaler, RobustScaler
-import numpy as np
-import os
+# # def create_square_bbox(lat, lon, size_meters):
+# #     point = Point(lon, lat)
+# #     transformer = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+# #     x, y = transformer.transform(lon, lat)
+# #     half_size = size_meters / 2
+# #     bbox = box(x - half_size, y - half_size, x + half_size, y + half_size)
+# #     transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+# #     minx, miny = transformer.transform(bbox.bounds[0], bbox.bounds[1])
+# #     maxx, maxy = transformer.transform(bbox.bounds[2], bbox.bounds[3])
+# #     return minx, miny, maxx, maxy
 
-def create_combined_scaled_plots(cities_input=None):
-    """
-    Create one long plot per city with all metrics (building and cell) scaled to the same range,
-    using boxplots with improved visibility
-    """
-    # Define metrics to include
-    building_metrics = [
-        'building_area', 'perimeter', 'longest_axis', 'elongation', 'orientation',
-        'corners', 'fractal_dimension', 'squareness', 'circular_compactness',
-        'convexity', 'building_adjacency', 'neighbor_distance' #rectangularity
-    ]
+# # def plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, grandparent_dir):
+# #     xmin, ymin, xmax, ymax = create_square_bbox(lat, lon, size_meters)
     
-    cell_metrics = [
-        'cell_area', 'perimeter', 'circular_compactness', 'convexity',
-        'orientation', 'elongation', 'rectangularity', 'car'
-    ]
+# #     con = duckdb.connect(os.path.join(parent_dir, 'data/0/data.db'))
+# #     con.install_extension('httpfs')
+# #     con.install_extension('spatial')
+# #     con.load_extension('httpfs')
+# #     con.load_extension('spatial')
+# #     con.execute("SET s3_region='us-west-2'")
+# #     con.execute("SET azure_storage_connection_string = 'DefaultEndpointsProtocol=https;AccountName=overturemapswestus2;AccountKey=;EndpointSuffix=core.windows.net';")
     
-    # Create plots directory if it doesn't exist
-    os.makedirs('plots', exist_ok=True)
+# #     query = f"""
+# #         SELECT *
+# #         FROM buildings
+# #         WHERE bbox.xmin > {xmin}
+# #           AND bbox.xmax < {xmax}
+# #           AND bbox.ymin > {ymin}
+# #           AND bbox.ymax < {ymax};
+# #     """
+# #     buildings_df = gpd.read_postgis(query, con, geom_col='geometry', crs='EPSG:4326')
+    
+# #     city_name_map = {
+# #         'Sansalvador_Ps_': 'San Salvador, El Salvador',
+# #         'SantoDomingo': 'Santo Domingo, Dominican Republic',
+# #         'GuatemalaCity': 'Guatemala City, Guatemala',
+# #         'Tegucigalpa': 'Tegucigalpa, Honduras',
+# #         'SanJoseCRI': 'San Jose, Costa Rica',
+# #         'Panama': 'Panama City, Panama',
+# #         'BelizeCity': 'Belize City, Belize (excluded from the study)',
+# #         'Managua': 'Managua, Nicaragua',
+# #         'Belmopan_': 'Belmopan, Belize'
+# #     }
+    
+# #     cities = {
+# #         'Tegucigalpa': os.path.join(parent_dir, 'data/SHP/Tegucigalpa_PS.shp'),
+# #         'SantoDomingo': os.path.join(parent_dir, 'data/0/SantoDomingo3857_buffered.geojson'),
+# #         'GuatemalaCity': os.path.join(parent_dir, 'data/SHP/Guatemala_PS.shp'),
+# #         'Managua': os.path.join(parent_dir, 'data/SHP/Managua_PS.shp'),
+# #         'Panama': os.path.join(parent_dir, 'data/SHP/Panama_PS.shp'),
+# #         'BelizeCity': os.path.join(parent_dir, 'data/SHP/BelizeCity_PS.shp'),
+# #         'SanJoseCRI': os.path.join(parent_dir, 'data/SHP/SanJose_PS.shp')
+# #     }
         
-    # Determine which cities to process
-    if cities_input is None:
-        cities = [d for d in os.listdir('metrics') if os.path.isdir(os.path.join('metrics', d))]
-    elif isinstance(cities_input, dict):
-        cities = list(cities_input.keys())
-    elif isinstance(cities_input, list):
-        cities = cities_input
-    else:
-        raise ValueError("cities_input must be None, a dictionary, or a list")
+# #     precarious_areas = gpd.read_file(cities[city_name])
     
-    # Process each city
-    for city in cities:
-        try:
-            # Load building and cell data
-            buildings_df = pd.read_csv(f'metrics/{city}/building_metrics.csv')
-            cells_df = pd.read_csv(f'metrics/{city}/tessellation_metrics.csv')
-            
-            print(f"Processing {city}")
-            
-            # Prepare building metrics
-            building_data = []
-            scaler = RobustScaler()  # Use RobustScaler instead of StandardScaler
-            
-            for metric in building_metrics:
-                if metric in buildings_df.columns:
-                    # Remove extreme outliers before scaling
-                    metric_data = buildings_df[metric]
-                    Q1 = metric_data.quantile(0.05)
-                    Q3 = metric_data.quantile(0.95)
-                    IQR = Q3 - Q1
-                    
-                    # Filter out extreme outliers
-                    valid_mask = (metric_data >= Q1 - 3 * IQR) & (metric_data <= Q3 + 3 * IQR)
-                    filtered_data = metric_data[valid_mask]
-                    filtered_is_slum = buildings_df['is_slum'][valid_mask]
-                    
-                    # Scale the filtered data
-                    scaled_values = scaler.fit_transform(filtered_data.values.reshape(-1, 1))
-                    
-                    # Create a row for each value
-                    for val, is_slum in zip(scaled_values, filtered_is_slum, strict=False):
-                        building_data.append({
-                            'Metric': f'Building_{metric}',
-                            'Value': val[0],
-                            'Type': 'Building',
-                            'Is_Slum': bool(is_slum)
-                        })
-            
-            # Prepare cell metrics
-            cell_data = []
-            for metric in cell_metrics:
-                if metric in cells_df.columns:
-                    # Remove extreme outliers before scaling
-                    metric_data = cells_df[metric]
-                    Q1 = metric_data.quantile(0.2)
-                    Q3 = metric_data.quantile(0.8)
-                    IQR = Q3 - Q1
-                    
-                    # Filter out extreme outliers
-                    valid_mask = (metric_data >= Q1 - 3 * IQR) & (metric_data <= Q3 + 3 * IQR)
-                    filtered_data = metric_data[valid_mask]
-                    filtered_is_slum = cells_df['is_slum'][valid_mask]
-                    
-                    # Scale the filtered data
-                    scaled_values = scaler.fit_transform(filtered_data.values.reshape(-1, 1))
-                    
-                    # Create a row for each value
-                    for val, is_slum in zip(scaled_values, filtered_is_slum, strict=False):
-                        cell_data.append({
-                            'Metric': f'Cell_{metric}',
-                            'Value': val[0],
-                            'Type': 'Cell',
-                            'Is_Slum': bool(is_slum)
-                        })
-            
-            # Combine all data
-            all_data = pd.DataFrame(building_data + cell_data)
-            
-            # Create the plot
-            plt.figure(figsize=(15, 20))
-            
-            # Create box plot with custom style
-            sns.boxplot(data=all_data, x='Value', y='Metric', hue='Is_Slum',
-                       orient='h', 
-                       showfliers=True,  # Show moderate outliers
-                       fliersize=2,  # Make outlier points smaller
-                       linewidth=2,  # Make box lines thicker
-                       palette=['lightblue', 'lightcoral'])  # Use distinct colors
-            
-            # Customize plot
-            plt.title(f'Morphological Metrics Comparison for {city}', 
-                     pad=20, fontsize=16, fontweight='bold')
-            plt.xlabel('Standardized Value', fontsize=12)
-            plt.ylabel('Metric', fontsize=12)
-            
-            # Improve metric labels
-            current_labels = plt.gca().get_yticklabels()
-            new_labels = [label.get_text().replace('Building_', '').replace('Cell_', '') 
-                         for label in current_labels]
-            plt.gca().set_yticklabels(new_labels, fontsize=10)
-            
-            # Add separator lines between building and cell metrics
-            last_building_metric = None
-            for i, metric in enumerate(plt.gca().get_yticklabels()):
-                if metric.get_text().startswith('Cell') and last_building_metric is None:
-                    last_building_metric = i
-                    plt.axhline(y=i - 0.5, color='gray', linestyle='--', alpha=0.5)
-            
-            # Improve legend
-            plt.legend(title='Area Type', labels=['Non-Slum', 'Slum'], 
-                      title_fontsize=12, fontsize=10)
-            
-            # Add vertical reference line at 0
-            plt.axvline(x=0, color='gray', linestyle='--', alpha=0.5)
-            
-            # Add grid but make it lighter
-            plt.grid(True, alpha=0.2)
-            
-            # Set background color
-            plt.gca().set_facecolor('white')
-            
-            # Add subtle box around plot
-            plt.box(True)
-            
-            # Adjust layout and save
-            plt.tight_layout()
-            plt.savefig(f'plots/{city}_combined_metrics.png', 
-                       dpi=300, bbox_inches='tight', facecolor='white')
-            plt.close()
-            
-            print(f"Saved combined plot for {city}")
-            
-        except Exception as e:
-            print(f"Error processing {city}: {str(e)}")
-            continue
+# #     buildings_df = buildings_df.to_crs('EPSG:3857')
+# #     precarious_areas = precarious_areas.to_crs('EPSG:3857')
+    
+# #     bbox = box(xmin, ymin, xmax, ymax)
+# #     bbox_gdf = gpd.GeoDataFrame({'geometry': [bbox]}, crs='EPSG:4326').to_crs('EPSG:3857')
+    
+# #     precarious_areas = gpd.clip(precarious_areas, bbox_gdf)
+    
+# #     unified_precarious_area = precarious_areas.union_all()
+# #     unified_precarious_gdf = gpd.GeoDataFrame({'geometry': [unified_precarious_area]}, crs='EPSG:3857')
+    
+# #     ax.set_facecolor('white')
+    
+# #     buildings_df.plot(ax=ax, edgecolor='none', facecolor='black', linewidth=0)
+    
+# #     # Plot precarious areas with faint fill and outline
+# #     unified_precarious_gdf.plot(ax=ax, facecolor='red', edgecolor='red', alpha=0.05, linewidth=2)
+# #     unified_precarious_gdf.boundary.plot(ax=ax, color='red', linewidth=2)
+    
+# #     ax.set_xlim(bbox_gdf.total_bounds[0], bbox_gdf.total_bounds[2])
+# #     ax.set_ylim(bbox_gdf.total_bounds[1], bbox_gdf.total_bounds[3])
+    
+# #     ax.set_axis_off()
+    
+# #     cleaned_city_name = city_name_map.get(city_name, city_name)
+# #     ax.set_title(f'{cleaned_city_name}', fontsize=14)
 
-# Run the visualization
-create_combined_scaled_plots(list(cities.keys()))
+# # def plot_multiple_areas(coordinates_list, size_meters, grandparent_dir):
+# #     n = len(coordinates_list)
+# #     cols = int(np.ceil(np.sqrt(n)))
+# #     rows = int(np.ceil(n / cols))
+    
+# #     fig, axs = plt.subplots(rows, cols, figsize=(5*cols, 5*rows), squeeze=False)
+# #     fig.suptitle('Building Footprints and Precarious Areas in Different Cities', fontsize=16)
+    
+# #     for i, (lat, lon, city_name) in enumerate(coordinates_list):
+# #         row = i // cols
+# #         col = i % cols
+# #         ax = axs[row, col]
+# #         plot_buildings_and_precarious_areas(ax, lat, lon, size_meters, city_name, grandparent_dir)
+    
+# #     # Hide any unused subplots
+# #     for i in range(n, rows*cols):
+# #         row = i // cols
+# #         col = i % cols
+# #         axs[row, col].axis('off')
+    
+# #     plt.tight_layout()
+# #     plt.show()
+
+# # # Example usage
+# # coordinates_list = [
+# #     (14.643041208660227, -90.52696617369627, 'GuatemalaCity'),
+# #     (14.09833557316007, -87.24716065494343, 'Tegucigalpa'),
+# #     (18.506793321891678, -69.89322847545206, 'SantoDomingo'),
+# #     (12.153548471297961, -86.25461143585959, 'Managua'),
+# #     (8.925055642079421, -79.62752568376733, 'Panama'),
+# #     (9.946122438272413, -84.08819439919527, 'SanJoseCRI'),
+# # ]
+
+# # size_meters = 1500
+
+# # plot_multiple_areas(coordinates_list, size_meters, grandparent_dir)
 
 
 
@@ -449,10 +453,11 @@ x = range(len(cities))
 
 # Color schemes for each dataset
 colors = {
-    'HRSL': {'non_slum': '#1f77b4', 'slum': '#1f77b4'},
-    'GHS': {'non_slum': '#2ca02c', 'slum': '#2ca02c'}
+    'HRSL': {'non_slum': '#1f77b4', 'slum': '#87CEEB'},  # Blue and light blue
+    'GHS': {'non_slum': '#FFA500', 'slum': '#FFE4B5'}    # Orange and light orange
 }
 
+    
 # Create bars for each dataset
 for i, (dataset, color_dict) in enumerate(colors.items()):
     dataset_data = valid_data[valid_data['dataset'] == dataset].sort_values('city')
@@ -484,7 +489,7 @@ for i, (dataset, color_dict) in enumerate(colors.items()):
                 fontweight='bold')
 
 # Customize the plot
-ax.set_title('Urban Population and Proportion in Slum Areas by Dataset', 
+ax.set_title('Urban Population and Proportion in Precarious Areas by Dataset', 
             fontsize=22, pad=20)
 ax.set_xlabel('City', fontsize=17)
 ax.set_ylabel('Urban Population', fontsize=17)
@@ -501,13 +506,13 @@ ax.yaxis.set_major_formatter(ticker.FuncFormatter(millions_formatter))
 
 # Create custom legend
 legend_elements = [
-    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['non_slum'], label='HRSL Total Population'),
-    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['slum'], alpha=0.3, label='HRSL Slum Population'),
-    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['non_slum'], label='GHS Total Population'),
-    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['slum'], alpha=0.3, label='GHS Slum Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['non_slum'], label='HRSL Non-precarious Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['HRSL']['slum'], alpha=0.3, label='HRSL Precarious Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['non_slum'], label='GHS Non-precarious Population'),
+    plt.Rectangle((0,0), 1, 1, facecolor=colors['GHS']['slum'], alpha=0.3, label='GHS Precarious Population'),
 ]
 ax.legend(handles=legend_elements, fontsize=12, title='Population Type', 
-         title_fontsize=14, loc='upper right')
+         title_fontsize=14, loc='upper left')
 
 # Add grid for easier comparison
 ax.grid(axis='y', linestyle='--', alpha=0.3)

@@ -38,6 +38,15 @@ import time
 from functools import wraps
 import random
 
+import geopandas as gpd
+import pandas as pd
+import ee
+from tqdm import tqdm
+from shapely.geometry import Polygon, MultiPolygon
+import time
+from functools import wraps
+import random
+
 def retry_with_backoff(retries=3, backoff_in_seconds=1):
     """Retry decorator with exponential backoff"""
     def decorator(func):
@@ -97,7 +106,7 @@ def geometry_to_ee(geometry):
         raise ValueError(f"Unsupported geometry type: {type(geometry)}")
 
 @retry_with_backoff(retries=5, backoff_in_seconds=2)
-def calculate_population(geometry, population_image, scale):
+def calculate_population(geometry, population_image, scale, band_name):
     """Calculate population within a geometry using Earth Engine with retries."""
     ee_geometry = geometry_to_ee(geometry)
     
@@ -106,16 +115,16 @@ def calculate_population(geometry, population_image, scale):
         geometry=ee_geometry,
         scale=scale,
         maxPixels=1e9
-    ).get('b1').getInfo()
+    ).get(band_name).getInfo()
     
     return population if population is not None else 0
 
-def process_geometries_batch(geometries, population_image, scale, batch_size=5):
+def process_geometries_batch(geometries, population_image, scale, band_name, batch_size=5):
     """Process geometries in batches to avoid overwhelming the connection."""
     total = 0
     for i in range(0, len(geometries), batch_size):
         batch = geometries[i:i + batch_size]
-        batch_total = sum(calculate_population(geom, population_image, scale) 
+        batch_total = sum(calculate_population(geom, population_image, scale, band_name) 
                          for geom in batch)
         total += batch_total
         # Small delay between batches
@@ -124,18 +133,20 @@ def process_geometries_batch(geometries, population_image, scale, batch_size=5):
 
 def analyze_populations(cities, urban_areas):
     """
-    Analyze populations using both HRSL and GHS datasets with their correct scales.
+    Analyze populations using both HRSL and GHS datasets with their correct scales and band names.
     Returns a DataFrame with population estimates for each city.
     """
-    # Initialize Earth Engine datasets with their respective scales
+    # Initialize Earth Engine datasets with their respective scales and band names
     datasets = {
         "HRSL": {
             "image": ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop").mosaic(),
-            "scale": 30
+            "scale": 30,
+            "band_name": "b1"
         },
         "GHS": {
-            "image": ee.Image("projects/sat-io/open-datasets/GHS/GHS_POP/GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0"),
-            "scale": 100
+            "image": ee.Image('JRC/GHSL/P2023A/GHS_POP/2015'),
+            "scale": 100,
+            "band_name": "population_count"
         }
     }
     
@@ -156,6 +167,7 @@ def analyze_populations(cities, urban_areas):
             try:
                 population_image = dataset_info["image"]
                 scale = dataset_info["scale"]
+                band_name = dataset_info["band_name"]
                 
                 print(f"Calculating {dataset_name} populations...")
                 
@@ -163,7 +175,8 @@ def analyze_populations(cities, urban_areas):
                 slum_pop = process_geometries_batch(
                     list(slums_gdf.geometry), 
                     population_image, 
-                    scale
+                    scale,
+                    band_name
                 )
                 
                 # Calculate urban population if available
@@ -172,7 +185,8 @@ def analyze_populations(cities, urban_areas):
                     urban_pop = process_geometries_batch(
                         list(city_urban_areas.geometry), 
                         population_image, 
-                        scale
+                        scale,
+                        band_name
                     )
                 
                 result = {
@@ -206,7 +220,7 @@ def analyze_populations(cities, urban_areas):
     results_df = pd.DataFrame(results)
     results_df.to_csv('data/population_analysis.csv', index=False)
     return results_df
-    
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 
