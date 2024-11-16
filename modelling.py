@@ -90,6 +90,18 @@ missing_df = missing_df.sort_values('Missing Values', ascending=False)
 # Keep only columns with missing values
 missing_df = missing_df[missing_df['Missing Values'] > 0]
 
+
+# remove NAs
+original_count = len(combined_metrics)
+clean_metrics = combined_metrics.dropna()
+cleaned_count = len(clean_metrics)
+removed_count = original_count - cleaned_count
+print(f"\nData Row Comparison:")
+print(f"Original rows: {original_count:,}")
+print(f"Rows removed:  {removed_count:,} ({(removed_count/original_count)*100:.1f}%)")
+print(f"Rows remaining: {cleaned_count:,} ({(cleaned_count/original_count)*100:.1f}%)")
+
+
 if len(missing_df) > 0:
     # Create a figure with two subplots
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))

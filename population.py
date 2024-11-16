@@ -1,4 +1,3 @@
-import geopandas as gpd
 import rasterio
 from rasterio.mask import mask
 import numpy as np
@@ -6,7 +5,6 @@ import seaborn as sns
 import ee
 import os
 import sys
-import geemap
 from shapely.geometry import box, Polygon, MultiPolygon
 from shapely.ops import unary_union
 from shapely import make_valid, simplify, wkt
@@ -25,19 +23,7 @@ from matplotlib import rcParams
 import contextily as cx
 from matplotlib_scalebar.scalebar import ScaleBar
 from pyproj import CRS
-from shapely.geometry import box, Point
-
-
-
-import geopandas as gpd
-import pandas as pd
-import ee
-from tqdm import tqdm
-from shapely.geometry import Polygon, MultiPolygon
-import time
-from functools import wraps
-import random
-
+from shapely.geometry import box, Point, Polygon, MultiPolygon
 import geopandas as gpd
 import pandas as pd
 import ee
@@ -221,6 +207,116 @@ def analyze_populations(cities, urban_areas):
     results_df.to_csv('data/population_analysis.csv', index=False)
     return results_df
 
+def enrich_and_save_precarious_areas(cities, results_df, output_dir='data/population_enriched'):
+    """
+    Enrich precarious areas with population estimates from different datasets
+    and save as GeoJSON files with population attributes.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Process each city
+    for city_name, city_data in cities.items():
+        print(f"\nProcessing {city_name}")
+        
+        try:
+            # Load precarious areas
+            precarious_areas = gpd.read_file(city_data['labels_path'])
+            if precarious_areas.crs != 'EPSG:4326':
+                precarious_areas = precarious_areas.to_crs('EPSG:4326')
+            
+            # Get population estimates for this city
+            city_results = results_df[results_df['city'] == city_name]
+            
+            if city_results.empty:
+                print(f"No population results found for {city_name}")
+                continue
+                
+            # Create population estimate columns for each precarious area
+            for dataset in ['HRSL', 'GHS']:
+                dataset_info = {
+                    "HRSL": {
+                        "image": ee.ImageCollection("projects/sat-io/open-datasets/hrsl/hrslpop").mosaic(),
+                        "scale": 30,
+                        "band_name": "b1"
+                    },
+                    "GHS": {
+                        "image": ee.Image('JRC/GHSL/P2023A/GHS_POP/2015'),
+                        "scale": 100,
+                        "band_name": "population_count"
+                    }
+                }[dataset]
+                
+                # Calculate population for each polygon
+                populations = []
+                for geom in tqdm(precarious_areas.geometry, 
+                               desc=f"Calculating {dataset} population for each area"):
+                    try:
+                        pop = calculate_population(
+                            geom,
+                            dataset_info["image"],
+                            dataset_info["scale"],
+                            dataset_info["band_name"]
+                        )
+                        populations.append(pop)
+                    except Exception as e:
+                        print(f"Error calculating {dataset} population for area: {e}")
+                        populations.append(None)
+                
+                # Add population column
+                precarious_areas[f'pop_{dataset.lower()}'] = populations
+            
+            # Calculate population difference (GHS - HRSL)
+            precarious_areas['pop_difference'] = (
+                precarious_areas['pop_ghs'] - precarious_areas['pop_hrsl']
+            )
+            
+            # Calculate percentage difference relative to HRSL
+            precarious_areas['pop_diff_percent'] = (
+                (precarious_areas['pop_difference'] / precarious_areas['pop_hrsl']) * 100
+            ).round(2)
+            
+            # Add total city populations from each dataset
+            for dataset in ['HRSL', 'GHS']:
+                city_total = city_results[
+                    city_results['dataset'] == dataset
+                ]['urban_population'].iloc[0]
+                precarious_areas[f'city_total_{dataset.lower()}'] = city_total
+            
+            # Calculate proportion of city population for each area
+            for dataset in ['hrsl', 'ghs']:
+                precarious_areas[f'proportion_{dataset}'] = (
+                    precarious_areas[f'pop_{dataset}'] / 
+                    precarious_areas[f'city_total_{dataset}'] * 100
+                ).round(2)
+            
+            # Save enriched geometries
+            output_file = os.path.join(output_dir, f'{city_name}_precarious_areas_enriched.geojson')
+            precarious_areas.to_file(output_file, driver='GeoJSON')
+            
+            print(f"Saved enriched precarious areas for {city_name}")
+            
+            # Print summary statistics for the city
+            print("\nSummary Statistics:")
+            print(f"Number of precarious areas: {len(precarious_areas)}")
+            print("\nPopulation Estimates:")
+            for dataset in ['hrsl', 'ghs']:
+                print(f"\n{dataset.upper()}:")
+                print(f"Total population: {precarious_areas[f'pop_{dataset}'].sum():,.0f}")
+                print(f"Mean population per area: {precarious_areas[f'pop_{dataset}'].mean():,.0f}")
+                print(f"Median population per area: {precarious_areas[f'pop_{dataset}'].median():,.0f}")
+            
+            print("\nPopulation Differences (GHS - HRSL):")
+            print(f"Mean difference: {precarious_areas['pop_difference'].mean():,.0f}")
+            print(f"Median difference: {precarious_areas['pop_difference'].median():,.0f}")
+            print(f"Max difference: {precarious_areas['pop_difference'].max():,.0f}")
+            print(f"Min difference: {precarious_areas['pop_difference'].min():,.0f}")
+            
+        except Exception as e:
+            print(f"Error processing {city_name}: {str(e)}")
+            continue
+    
+    return True
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 
@@ -272,6 +368,7 @@ urban_areas = gpd.read_file('data/allurban_SICA.geojson')
 
 # Run analysis
 results = analyze_populations(cities, urban_areas)
+enrich_and_save_precarious_areas(cities, results)
 
 # Display summary
 print("\nAnalysis Summary:")

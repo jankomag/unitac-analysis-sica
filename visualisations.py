@@ -183,16 +183,25 @@ columns_to_visualize = [
     'building_area',
     'perimeter',
     'elongation',
+    'cell_elongation',
+    'orientation',
+    'cell_orientation',
     'fractal_dimension',
     'circular_compactness',
-    'rectangularity',
+    'cell_circular_compactness',
+    'convexity',
+    'cell_convexity',
     'neighbor_distance',
-    'coverage_ratio'
+    'coverage_ratio',
+    'rectangularity',
+    'cell_rectangularity',
+    'building_adjacency',
+    'alignment'
 ]
 
 # Create and save the plot
 fig = create_standardized_boxplots(combined_metrics, columns_to_visualize)
-plt.savefig('metrics/standardized_boxplots.png', dpi=300, bbox_inches='tight')
+plt.savefig('plots/standardized_boxplots.png', dpi=300, bbox_inches='tight')
 plt.close()
 
 def create_city_wise_boxplots(combined_metrics, columns_to_visualize):
@@ -286,7 +295,7 @@ def create_city_wise_boxplots(combined_metrics, columns_to_visualize):
 
 # Create and save the plot
 fig = create_city_wise_boxplots(combined_metrics, columns_to_visualize)
-plt.savefig('metrics/city_wise_standardized_boxplots.png', dpi=300, bbox_inches='tight')
+plt.savefig('plots/city_wise_standardized_boxplots.png', dpi=300, bbox_inches='tight')
 plt.close()
 
 
