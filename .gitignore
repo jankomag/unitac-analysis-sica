@@ -2,6 +2,8 @@ data/
 metrics/
 plots/
 cache/
+files/
 test_analysis.py
 building_source.py
 .DS_Store
+test.ipynb

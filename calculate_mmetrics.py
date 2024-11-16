@@ -4,6 +4,7 @@ import geopandas as gpd
 import pandas as pd
 import momepy
 import osmnx as ox
+import shapely
 from shapely.geometry import box
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import MultiPolygon
 import libpysal
+from scipy.spatial import Voronoi, voronoi_plot_2d
 from shapely.validation import make_valid
 from shapely.errors import TopologicalError, GEOSException
 import seaborn as sns
@@ -53,40 +55,95 @@ def get_utm_crs(lat, lon):
     
     return f'EPSG:{epsg_code}'
 
+# Simple direct calculation using matching uIDs
 def query_buildings_data(xmin, ymin, xmax, ymax, use_cache=True):
-    """Query buildings using OvertureMaestro"""
+    """Query buildings using OvertureMaestro with caching and progress tracking"""
     import overturemaestro as om
     from shapely.geometry import box
     
     # Create bounding box
     bbox = box(xmin, ymin, xmax, ymax)
     
-    # Get buildings data directly as a GeoDataFrame
-    buildings = om.convert_geometry_to_geodataframe(
-        theme="buildings",
-        type="building",
-        geometry_filter=bbox,
-        ignore_cache=not use_cache,  # Use cache by default
-        verbosity_mode="transient",  # Show progress but clean up after
-        working_directory="cache/overture"  # Store cache in specific directory
-    )
-    
-    if buildings.empty:
-        print("No buildings found in the specified area")
+    try:
+        # Get buildings data with additional options
+        buildings = om.convert_geometry_to_geodataframe(
+            theme="buildings",
+            type="building",
+            geometry_filter=bbox,
+            ignore_cache=not use_cache,  # Use cache by default
+            verbosity_mode="transient",  # Show progress but clean up after
+            working_directory="cache/overture"  # Store cache in specific directory
+        )
+        
+        if buildings.empty:
+            print("No buildings found in the specified area")
+            return None
+        
+        # You could add additional filters here if needed
+        # Reset the index to make 'id' a regular column
+        buildings = buildings.reset_index()
+        
+        # Now we can select id and geometry
+        buildings = buildings[['id', 'geometry']]
+        
+        buildings = buildings.to_crs("EPSG:3857")
+        buildings['class_id'] = 1
+        
+        return buildings
+        
+    except Exception as e:
+        print(f"Error querying buildings: {str(e)}")
         return None
+
+def query_roads_data(xmin, ymin, xmax, ymax):
+    """Query road network using OvertureMaestro"""
+    import overturemaestro as om
+    from shapely.geometry import box
     
-    # Keep only necessary columns and add class_id
-    # buildings = buildings[['uID', 'geometry']]
-    buildings = buildings.to_crs("EPSG:3857")
-    buildings['class_id'] = 1
+    # Create bounding box
+    bbox = box(xmin, ymin, xmax, ymax)
     
-    return buildings
+    try:
+        # Get roads data with filter for road subtype only
+        roads = om.convert_geometry_to_geodataframe(
+            theme="transportation",
+            type="segment",
+            geometry_filter=bbox,
+            pyarrow_filter=[[
+                ("subtype", "=", "road"),  # Only get road segments
+                # Exclude service roads, paths, steps, etc if you want only main roads
+                ("class", "in", [
+                    "motorway", "trunk", "primary", "secondary", 
+                    "tertiary", "residential", "unclassified"
+                ])
+            ]],
+            verbosity_mode="silent"
+        )
+        
+        if roads.empty:
+            print("No roads found in the specified area")
+            return None
+        
+        # Keep essential columns
+        roads = roads.reset_index()
+        roads = roads[[
+            'id', 'geometry', 'class', 'subclass',
+            'names',  # Keep names for street names
+            'speed_limits'  # Keep speed limits if available
+        ]]
+        roads = roads.to_crs("EPSG:3857")
+        
+        return roads
+        
+    except Exception as e:
+        print(f"Error querying roads: {str(e)}")
+        return None
 
 cities = {
-    'BelizeCity': {'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
-                   'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/BelizeCity_PS.shp')},
-    'Belmopan': {'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
-                 'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Belmopan_PS.shp')},
+    # 'BelizeCity': {'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/BLZ_BelizeCity_2024.tif'),
+    #                'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/BelizeCity_PS.shp')},
+    # 'Belmopan': {'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/BLZ_Belmopan_2024.tif'),
+    #              'labels_patha': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Belmopan_PS.shp')},
     # 'Tegucigalpa': {
     #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/HND_Comayaguela_2023.tif'),
     #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Tegucigalpa_PS.shp'),
@@ -105,20 +162,20 @@ cities = {
     #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Managua_PS.shp'),
     #     'use_augmentation': False
     # },
-    # 'Panama': {
-    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/PAN_Panama_2024.tif'),
-    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Panama_PS.shp'),
-    #     'use_augmentation': False
-    # },
-    # 'SanSalvador_PS': {
-    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
-    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
-    # },
-    # 'SanJoseCRI': {
-    #     'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
-    #     'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/SanJose_PS.shp'),
-    #     'use_augmentation': False
-    # }
+    'Panama': {
+        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/PAN_Panama_2024.tif'),
+        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/Panama_PS.shp'),
+        'use_augmentation': False
+    },
+    'SanSalvador_PS': {
+        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/SLV_SanSalvador_2024.tif'),
+        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/SanSalvador_PS_lotifi_ilegal.shp'),
+    },
+    'SanJoseCRI': {
+        'image_path': os.path.join(parent_dir, 'slums-model-unitac/data/0/sentinel_Gee/CRI_San_Jose_2023.tif'),
+        'labels_path': os.path.join(parent_dir, 'slums-model-unitac/data/SHP/SanJose_PS.shp'),
+        'use_augmentation': False
+    }
 }
 
 def process_city(city_name, city_data, urban_areas):
@@ -154,7 +211,6 @@ def process_city(city_name, city_data, urban_areas):
         )
     
     # Query buildings using the bounds
-
     buildings = query_buildings_data(bounds[0], bounds[1], bounds[2], bounds[3])
     
     if buildings.empty:
@@ -192,15 +248,15 @@ def process_city(city_name, city_data, urban_areas):
     
     # Create spatial weights matrices for buildings
     print("Creating spatial weights matrices...")
-    sw_queen = libpysal.weights.Queen.from_dataframe(
-        buildings_utm, 
+    sw_distance100 = libpysal.weights.DistanceBand.from_dataframe(
+        buildings_utm,
+        threshold=100,
         ids='uID',
         silence_warnings=True
     )
-    
-    sw_dist = libpysal.weights.DistanceBand.from_dataframe(
+    sw_distance1 = libpysal.weights.DistanceBand.from_dataframe(
         buildings_utm,
-        threshold=100,
+        threshold=1,
         ids='uID',
         silence_warnings=True
     )
@@ -221,55 +277,47 @@ def process_city(city_name, city_data, urban_areas):
     
     # Adjacency and distance metrics
     print("Calculating adjacency and distance metrics...")
+    
+    # Calculate building adjacency using distance weights
     buildings_utm['building_adjacency'] = momepy.BuildingAdjacency(
         buildings_utm,
-        sw_queen,
+        sw_distance1,
         unique_id='uID'
     ).series
+    buildings_utm['building_adjacency'] = buildings_utm['building_adjacency'].fillna(0)
     
     buildings_utm['neighbor_distance'] = momepy.NeighborDistance(
         buildings_utm,
-        sw_dist,
+        sw_distance100,
         'uID'
     ).series
     
-    # Create spatial weights for analyzing alignment with neighboring buildings
-    sw_align = momepy.sw_high(k=3, gdf=buildings_utm, ids='uID')
-
     # Calculate building alignment with neighbors
     buildings_utm['alignment'] = momepy.Alignment(
         buildings_utm,
-        sw_align, 
+        sw_distance100, 
         'uID',
         'orientation'
     ).series
 
     # Coverage metrics
     print("Calculating coverage metrics...")
-    tessellation['coverage_ratio'] = momepy.AreaRatio(
-        tessellation, 
-        buildings_utm, 
-        'cell_area',
-        'building_area',
-        'uID'
-    ).series
+    tessellation['coverage_ratio'] = (
+        buildings_utm.set_index('uID')['building_area'] / 
+        tessellation.set_index('uID')['cell_area']
+    ).reindex(tessellation.index).fillna(0)
     
-    tessellation['coverage_ratio'] = buildings_utm['building_area'].div(tessellation['cell_area'])
+    print(f"NAs in coverage ratio: {tessellation['coverage_ratio'].isna().sum()}")
     
-    # Calculate building centroids
-    centroids = buildings_utm.copy()
-    centroids.geometry = buildings_utm.centroid
-
     # Identify slum/non-slum areas
     slums_union = slums_utm.geometry.union_all()
     buildings_utm['is_slum'] = buildings_utm.geometry.intersects(slums_union)
     
     # Transfer tessellation metrics to buildings
     # First join slum classification and coverage ratio
-    buildings_utm = gpd.sjoin(
-        buildings_utm,
+    buildings_utm = buildings_utm.merge(
         tessellation[[
-            'geometry', 
+            'uID',  # Include uID column in the selection
             'coverage_ratio',
             'cell_area',
             'cell_perimeter',
@@ -279,11 +327,10 @@ def process_city(city_name, city_data, urban_areas):
             'cell_elongation',
             'cell_rectangularity'
         ]],
-        how='left',
-        predicate='within'
+        on='uID',  # Specify the column to join on
+        how='left'
     )
-    
-    # Fill NA values
+    # Fill NA values\
     buildings_utm['is_slum'] = buildings_utm['is_slum'].fillna(False)
     for col in buildings_utm.columns:
         if col.startswith('cell_'):
@@ -296,11 +343,12 @@ def process_city(city_name, city_data, urban_areas):
     # Save metrics
     print(f"Saving metrics for {city_name}...")
     # Save all metrics in one CSV file
-    metrics_df = buildings_utm.drop(columns=['geometry', 'index_right'])
+    metrics_df = buildings_utm.drop(columns=['geometry'])
     metrics_df.to_csv(os.path.join(output_dir, 'combined_metrics.csv'), index=False)
     
     # Save shapefile of buildings with all metrics
     buildings_utm.to_file(os.path.join(output_dir, 'buildings_with_metrics.gpkg'), driver='GPKG')
+    tessellation.to_file(os.path.join(output_dir, 'tessellation_with_metrics.gpkg'), driver='GPKG')
     
     print(f"Metrics saved to {output_dir} directory")
     
@@ -346,6 +394,7 @@ def process_all_cities(cities_dict):
 # Run the analysis for all cities
 if __name__ == '__main__':
     # Add this line at the start of your main script
+    from multiprocessing import freeze_support
     freeze_support()
     
     # Then your existing code
